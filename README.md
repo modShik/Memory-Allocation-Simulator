@@ -50,7 +50,7 @@ There are two easy ways to run this:
 
 
 
-You can run the live version of this simulator right in your browser at: https://github.com/modShik/Memory-Allocation-Simulator
+You can run the live version of this simulator right in your browser at:[https://github.com/modShik/Memory-Allocation-Simulator](https://modshik.github.io/Memory-Allocation-Simulator/simulator.html)
 
 
 
@@ -103,4 +103,5 @@ https://photos.app.goo.gl/3hcdKMZA8tnRUpy89
 
 
 https://photos.app.goo.gl/JVAxGvF4auLgr75V7
+
 

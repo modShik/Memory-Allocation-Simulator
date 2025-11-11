@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FITFAT SHOW</title>
+    <!-- 1. Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 2. Load React -->
+    <script src="https://unpkg.com/react@17/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js" crossorigin></script>
+    <!-- 3. Load Babel (to run JSX in the browser) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Configure Tailwind for Dark Mode -->
+    <script>
+      tailwind.config = {
+        darkMode: 'class', // or 'media'
+      }
+    </script>
+  </head>
+  <body class="font-sans bg-gray-100 dark:bg-gray-900">
+    <!-- This is where our React app will live -->
+    <div id="root"></div>
+
+    <!-- 4. This is your entire React app -->
+    <script type="text/babel">
+      // Note: We use React from the global window object, so no 'import' is needed.
+      const { useState, useMemo, useEffect } = React;
+
+      // --- Helper Functions ---
+
+      /**
+       * Generates a unique ID.
+       */
+      const generateId = () => `id_${Math.random().toString(36).substr(2, 9)}`;
+
+      /**
+       * Merges adjacent free blocks in a memory list.
+       * @param {Array<Object>} blocks - The list of memory blocks.
+       * @returns {Array<Object>} A new list with adjacent free blocks coalesced.
+       */
+      const mergeFreeBlocks = (blocks) => {
+        if (!blocks.length) return [];
+
+        const merged = [];
+        let currentBlock = { ...blocks[0] };
+
+        for (let i = 1; i < blocks.length; i++) {
+          const nextBlock = { ...blocks[i] };
+          if (currentBlock.isFree && nextBlock.isFree) {
+            // Merge nextBlock into currentBlock
+            currentBlock.size += nextBlock.size;
+          } else {
+            // Push the completed currentBlock and start a new one
+            merged.push(currentBlock);
+            currentBlock = nextBlock;
+          }
+        }
+        // Push the last block
+        merged.push(currentBlock);
+        return merged;
+      };
+
+      // --- React Components ---
+
+      /**
+       * Main Application Component
+       * Note: We changed 'export default function App' to just 'function App'
+       */
+      function App() {
+        // --- State ---
+
+        // Input state for creating initial memory blocks
+        const [blockInput, setBlockInput] = useState({ size: '' });
+        // Input state for creating new processes
+        const [processInput, setProcessInput] = useState({ size: '' });
+
+        // List of the initial block configurations (the "partitions")
+        const [initialBlocks, setInitialBlocks] = useState([
+          { id: generateId(), size: 300 },
+          { id: generateId(), size: 200 },
+          { id: generateId(), size: 500 },
+        ]);
+
+        // Queue of processes waiting for allocation
+        const [processQueue, setProcessQueue] = useState([
+          { id: generateId(), size: 150 },
+          { id: generateId(), size: 250 },
+          { id: generateId(), size: 400 },
+        ]);
+
+        // Holds the list of *all* allocated processes for deallocation
+        const [allocatedProcesses, setAllocatedProcesses] = useState([]);
+        
+        // The core state: holds the memory layout for each strategy
+        const [memoryState, setMemoryState] = useState({
+          firstFit: [],
+          bestFit: [],
+          worstFit: [],
+        });
+        
+        // Error/Status message
+        const [message, setMessage] = useState('');
+
+        // --- Derived State ---
+
+        // Calculate total memory size from the initial blocks
+        const totalMemory = useMemo(() => {
+          return initialBlocks.reduce((sum, block) => sum + block.size, 0);
+        }, [initialBlocks]);
+
+        // --- Effects ---
+
+        // Initialize or reset memory state when initialBlocks changes
+        useEffect(() => {
+          const initialMemory = initialBlocks.map(block => ({
+            ...block,
+            isFree: true,
+            processId: null,
+            originalBlockId: block.id, // To group visual blocks
+          }));
+          
+          // Deep copy for each strategy
+          setMemoryState({
+            firstFit: JSON.parse(JSON.stringify(initialMemory)),
+            bestFit: JSON.parse(JSON.stringify(initialMemory)),
+            worstFit: JSON.parse(JSON.stringify(initialMemory)),
+          });
+          // Also reset allocated processes when memory is reset
+          setAllocatedProcesses([]);
+          setMessage('Memory reset to initial configuration.');
+        }, [initialBlocks]);
+
+        // --- Input Handlers ---
+
+        const handleAddBlock = (e) => {
+          e.preventDefault();
+          const size = parseInt(blockInput.size, 10);
+          if (size > 0) {
+            setInitialBlocks([...initialBlocks, { id: generateId(), size }]);
+            setBlockInput({ size: '' });
+            setMessage(`Added initial block of size ${size}.`);
+          }
+        };
+        
+        const handleRemoveBlock = (id) => {
+           setInitialBlocks(initialBlocks.filter(b => b.id !== id));
+           setMessage(`Removed initial block.`);
+        };
+
+        const handleAddProcess = (e) => {
+          e.preventDefault();
+          const size = parseInt(processInput.size, 10);
+          if (size > 0) {
+            setProcessQueue([...processQueue, { id: generateId(), size }]);
+            setProcessInput({ size: '' });
+          }
+        };
+        
+        const handleRemoveProcess = (id) => {
+          setProcessQueue(processQueue.filter(p => p.id !== id));
+        };
+        
+        // --- Allocation Logic ---
+
+        /**
+         * Main function to trigger allocation of the next process in the queue.
+         */
+        const handleAllocateNext = () => {
+          if (processQueue.length === 0) {
+            setMessage('No processes in the queue to allocate.');
+            return;
+          }
+
+          const processToAllocate = processQueue[0];
+          const newQueue = processQueue.slice(1);
+          
+          let allocatedAny = false;
+          const strategies = ['firstFit', 'bestFit', 'worstFit'];
+          const newStates = { ...memoryState };
+          let newAllocatedList = [...allocatedProcesses];
+
+          strategies.forEach(strategy => {
+            const { success, newBlocks } = allocate(
+              strategy,
+              newStates[strategy],
+              processToAllocate
+            );
+            
+            if (success) {
+              newStates[strategy] = newBlocks;
+              allocatedAny = true;
+              
+              // Add to our master list of allocated processes
+              newAllocatedList.push({
+                ...processToAllocate,
+                allocatedStrategy: strategy
+              });
+            }
+          });
+
+          if (allocatedAny) {
+            setMemoryState(newStates);
+            setProcessQueue(newQueue);
+            setAllocatedProcesses(newAllocatedList);
+            setMessage(`Allocated process ${processToAllocate.id} (size ${processToAllocate.size}).`);
+          } else {
+            setMessage(`Could not allocate process ${processToAllocate.id} (size ${processToAllocate.size}) in ANY strategy.`);
+          }
+        };
+
+        /**
+         * Core allocation logic for a single strategy.
+         */
+        const allocate = (strategy, currentBlocks, process) => {
+          let bestBlockIndex = -1;
+          const freeBlocks = currentBlocks.map((block, index) => ({...block, index}))
+                                        .filter(b => b.isFree && b.size >= process.size);
+
+          if (freeBlocks.length === 0) {
+            return { success: false, newBlocks: currentBlocks };
+          }
+
+          // Find the block based on strategy
+          if (strategy === 'firstFit') {
+            bestBlockIndex = freeBlocks[0].index;
+          } else if (strategy === 'bestFit') {
+            freeBlocks.sort((a, b) => a.size - b.size);
+            bestBlockIndex = freeBlocks[0].index;
+          } else if (strategy === 'worstFit') {
+            freeBlocks.sort((a, b) => b.size - a.size);
+            bestBlockIndex = freeBlocks[0].index;
+          }
+          
+          if (bestBlockIndex === -1) {
+             return { success: false, newBlocks: currentBlocks };
+          }
+
+          // Perform the allocation (split the block)
+          const newBlocks = [...currentBlocks];
+          const blockToAllocate = newBlocks[bestBlockIndex];
+          
+          const fragmentSize = blockToAllocate.size - process.size;
+          
+          // 1. The new allocated block
+          const allocatedBlock = {
+            ...blockToAllocate,
+            size: process.size,
+            processId: process.id,
+            isFree: false,
+          };
+          
+          newBlocks[bestBlockIndex] = allocatedBlock; // Replace old block
+
+          // 2. The new free fragment (if any)
+          if (fragmentSize > 0) {
+            const fragmentBlock = {
+              id: generateId(),
+              size: fragmentSize,
+              isFree: true,
+              processId: null,
+              originalBlockId: blockToAllocate.originalBlockId, // Keep it in the same visual group
+            };
+            newBlocks.splice(bestBlockIndex + 1, 0, fragmentBlock); // Insert fragment after
+          }
+
+          return { success: true, newBlocks: newBlocks };
+        };
+
+        // --- Deallocation Logic ---
+
+        /**
+         * Main function to trigger deallocation of a specific process.
+         */
+        const handleDeallocate = (processId) => {
+          const strategies = ['firstFit', 'bestFit', 'worstFit'];
+          const newStates = { ...memoryState };
+          
+          let processFound = false;
+
+          strategies.forEach(strategy => {
+            let blocks = newStates[strategy];
+            const blockIndex = blocks.findIndex(b => b.processId === processId);
+            
+            if (blockIndex > -1) {
+              processFound = true;
+              // 1. Mark the block as free
+              blocks[blockIndex].isFree = true;
+              blocks[blockIndex].processId = null;
+              
+              // 2. Merge adjacent free blocks
+              newStates[strategy] = mergeFreeBlocks(blocks);
+            }
+          });
+          
+          if (processFound) {
+            setMemoryState(newStates);
+            // Remove from allocated list
+            setAllocatedProcesses(allocatedProcesses.filter(p => p.id !== processId));
+            setMessage(`Deallocated process ${processId}.`);
+          } else {
+            setMessage(`Could not find process ${processId} to deallocate.`);
+          }
+        };
+
+        // --- Render ---
+
+        return (
+          // Use 'Inter' font and dark mode support
+          <div className="text-gray-900 dark:text-gray-100 min-h-screen p-4 md:p-8">
+            <div className="max-w-7xl mx-auto">
+              {/* Header */}
+              <header className="mb-6">
+                <h1 className="text-3xl md:text-4xl font-bold text-blue-600 dark:text-blue-400">
+                  Memory Allocation Simulator
+                </h1>
+                <p className="text-lg text-gray-700 dark:text-gray-300">
+                  Compare First Fit, Best Fit, and Worst Fit strategies.
+                </p>
+              </header>
+
+              {/* Main Content: Inputs + Visualization */}
+              <div className="flex flex-col lg:flex-row gap-8">
+                
+                {/* --- Input & Control Panel (Left Side) --- */}
+                <aside className="w-full lg:w-1/3 xl:w-1/4 space-y-6">
+                  <ConfigPanel 
+                    title="1. Configure Initial Memory"
+                    items={initialBlocks}
+                    itemLabel="Block"
+                    inputState={blockInput}
+                    onInputChange={setBlockInput}
+                    onAddItem={handleAddBlock}
+                    onRemoveItem={handleRemoveBlock}
+                  />
+                  
+                  <ConfigPanel 
+                    title="2. Create Process Queue"
+                    items={processQueue}
+                    itemLabel="Process"
+                    inputState={processInput}
+                    onInputChange={setProcessInput}
+                    onAddItem={handleAddProcess}
+                    onRemoveItem={handleRemoveProcess}
+                  />
+                  
+                  <ProcessControls
+                    onAllocateNext={handleAllocateNext}
+                    isQueueEmpty={processQueue.length === 0}
+                  />
+                  
+                  <DeallocationPanel
+                    allocatedProcesses={allocatedProcesses}
+                    onDeallocate={handleDeallocate}
+                  />
+                  
+                  {/* Status Message */}
+                  {message && (
+                    <div className="p-3 rounded-lg bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 text-sm">
+                      {message}
+                    </div>
+                  )}
+                </aside>
+
+                {/* --- Visualization Panel (Right Side) --- */}
+                <main className="w-full lg:w-2/3 xl:w-3/4 space-y-8">
+                  <h2 className="text-2xl font-semibold">Allocation Comparison</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <MemoryVisualizer
+                      strategyName="First Fit"
+                      blocks={memoryState.firstFit}
+                      initialBlocks={initialBlocks}
+                      totalMemory={totalMemory}
+                    />
+                    <MemoryVisualizer
+                      strategyName="Best Fit"
+                      blocks={memoryState.bestFit}
+                      initialBlocks={initialBlocks}
+                      totalMemory={totalMemory}
+                    />
+                    <MemoryVisualizer
+                      strategyName="Worst Fit"
+                      blocks={memoryState.worstFit}
+                      initialBlocks={initialBlocks}
+                      totalMemory={totalMemory}
+                    />
+                  </div>
+                </main>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      /**
+       * A reusable panel for adding/removing memory blocks or processes.
+       */
+      function ConfigPanel({ title, items, itemLabel, inputState, onInputChange, onAddItem, onRemoveItem }) {
+        return (
+          <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
+            <h3 className="text-lg font-semibold mb-3">{title}</h3>
+            <form onSubmit={onAddItem} className="flex gap-2 mb-3">
+              <input
+                type="number"
+                placeholder="Size (e.g., 100)"
+                value={inputState.size}
+                onChange={(e) => onInputChange({ size: e.target.value })}
+                className="flex-grow p-2 border rounded-md dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                required
+              />
+              <button
+                type="submit"
+                className="px-4 py-2 bg-blue-600 text-white rounded-md font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800"
+              >
+                Add
+              </button>
+            </form>
+            <ul className="space-y-2 max-h-48 overflow-y-auto">
+              {items.map((item, index) => (
+                <li
+                  key={item.id}
+                  className="flex justify-between items-center p-2 bg-gray-100 dark:bg-gray-700 rounded-md"
+                >
+                  <span className="text-sm font-medium">
+                    {itemLabel} {item.id.substring(3, 7)} (Size: {item.size})
+                  </span>
+                  <button
+                    onClick={() => onRemoveItem(item.id)}
+                    className="text-red-500 hover:text-red-700 dark:hover:text-red-400 font-bold text-lg"
+                    aria-label="Remove item"
+                  >
+                    &times;
+                  </button>
+                </li>
+              ))}
+              {items.length === 0 && (
+                <li className="text-sm text-gray-500 dark:text-gray-400 italic">
+                  No {itemLabel.toLowerCase()}s added.
+                </li>
+              )}
+            </ul>
+          </div>
+        );
+      }
+
+      /**
+       * A panel for the main "Allocate" button.
+       */
+      function ProcessControls({ onAllocateNext, isQueueEmpty }) {
+        return (
+          <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
+            <h3 className="text-lg font-semibold mb-3">3. Run Allocation</h3>
+            <button
+              onClick={onAllocateNext}
+              disabled={isQueueEmpty}
+              className="w-full px-4 py-3 bg-green-600 text-white rounded-md font-semibold text-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
+            >
+              {isQueueEmpty ? 'Queue Empty' : 'Allocate Next Process'}
+            </button>
+          </div>
+        );
+      }
+
+      /**
+       * A panel to show allocated processes and allow deallocation.
+       */
+      function DeallocationPanel({ allocatedProcesses, onDeallocate }) {
+         // Group processes by ID to show duplicates across strategies
+         const groupedProcesses = allocatedProcesses.reduce((acc, process) => {
+           if (!acc[process.id]) {
+             acc[process.id] = { ...process, strategies: [] };
+           }
+           acc[process.id].strategies.push(process.allocatedStrategy);
+           return acc;
+         }, {});
+         
+         const uniqueProcesses = Object.values(groupedProcesses);
+
+        return (
+          <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
+            <h3 className="text-lg font-semibold mb-3">4. Allocated Processes</h3>
+            <ul className="space-y-2 max-h-48 overflow-y-auto">
+              {uniqueProcesses.map((process) => (
+                <li
+                  key={process.id}
+                  className="flex justify-between items-center p-2 bg-gray-100 dark:bg-gray-700 rounded-md"
+                >
+                  <div>
+                    <span className="text-sm font-medium block">
+                      Process {process.id.substring(3, 7)} (Size: {process.size})
+                    </span>
+                    <span className="text-xs text-gray-600 dark:text-gray-400">
+                      In: {process.strategies.join(', ')}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => onDeallocate(process.id)}
+                    className="px-3 py-1 bg-red-500 text-white rounded-md font-medium text-sm hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500"
+                  >
+                    Free
+                  </button>
+                </li>
+              ))}
+              {uniqueProcesses.length === 0 && (
+                <li className="text-sm text-gray-500 dark:text-gray-400 italic">
+                  No processes allocated.
+                </li>
+              )}
+            </ul>
+          </div>
+        );
+      }
+
+
+      /**
+       * Renders the visual bar for a single allocation strategy.
+       */
+      function MemoryVisualizer({ strategyName, blocks, initialBlocks, totalMemory }) {
+        // Group blocks by their original partition ID to render them together
+        const groupedBlocks = initialBlocks.map(initialBlock => {
+          return {
+            initialBlock,
+            // Find all current blocks (splits) that came from this initial block
+            currentBlocks: blocks.filter(b => b.originalBlockId === initialBlock.id)
+          };
+        });
+        
+        if (totalMemory === 0) return null;
+
+        return (
+          <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
+            <h3 className="text-xl font-semibold mb-4 text-center">{strategyName}</h3>
+            
+            {/* Legend */}
+            <div className="flex justify-center gap-4 mb-4 text-xs">
+               <div className="flex items-center">
+                  <span className="w-3 h-3 rounded-sm bg-blue-600 mr-1.5"></span> Allocated
+               </div>
+               <div className="flex items-center">
+                  <span className="w-3 h-3 rounded-sm bg-green-400 dark:bg-green-600 mr-1.5"></span> Free
+               </div>
+            </div>
+            
+            {/* Render each initial block partition */}
+            <div className="space-y-2">
+              {groupedBlocks.map(({ initialBlock, currentBlocks }) => (
+                <div 
+                  key={initialBlock.id} 
+                  title={`Initial Block ${initialBlock.id.substring(3, 7)} (Size: ${initialBlock.size})`}
+                  className="w-full h-16 bg-gray-200 dark:bg-gray-900 rounded-lg overflow-hidden flex border border-gray-300 dark:border-gray-700"
+                  style={{ 
+                    // This outer bar's width is proportional to the total memory
+                    flexBasis: `${(initialBlock.size / totalMemory) * 100}%` 
+                  }}
+                >
+                  {/* Render the splits inside this partition */}
+                  {currentBlocks.map((block) => {
+                    const widthPercent = (block.size / initialBlock.size) * 100;
+                    return (
+                      <div
+                        key={block.id}
+                        title={block.isFree ? `Free (Size: ${block.size})` : `Process ${block.processId.substring(3,7)} (Size: ${block.size})`}
+                        className={`h-full flex items-center justify-center text-white text-xs font-mono transition-all duration-300 ${
+                          block.isFree ? 'bg-green-400 dark:bg-green-600' : 'bg-blue-600'
+                        } ${!block.isFree ? 'hover:bg-blue-700' : 'hover:bg-green-500'}`}
+                        style={{ 
+                          width: `${widthPercent}%`,
+                          // Add a border to separate blocks
+                          borderRight: '1px solid rgba(0,0,0,0.2)'
+                        }}
+                      >
+                        {/* Show text only if it fits */}
+                        {widthPercent > 10 && (
+                          <span className="truncate px-1">
+                            {block.isFree ? `${block.size}` : `${block.processId.substring(3, 7)}`}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+            
+            {/* Container for the blocks to scale relative to total memory */}
+            <div className="flex w-full mt-2">
+               {/* This ensures the flex-basis percentages above work correctly */}
+            </div>
+          </div>
+        );
+      }
+
+      // 5. Tell React to render our <App> component in the #root div
+      ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+  </body>
+</html>
